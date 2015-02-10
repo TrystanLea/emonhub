@@ -17,11 +17,21 @@ import signal
 import argparse
 import pprint
 import Queue
+import json
+import urllib2
+import mosquitto
 
 import emonhub_setup as ehs
 import emonhub_reporter as ehr
 import emonhub_interfacer as ehi
 import emonhub_coder as ehc
+
+mqttc = mosquitto.Mosquitto()
+mqttc.connect("127.0.0.1",1883, 60, True)
+
+class MQTTLogHandler(logging.Handler):
+    def emit(self, record):        
+        mqttc.publish("log",record.asctime+" "+record.levelname+" "+record.message)
 
 """class EmonHub
 
@@ -81,6 +91,8 @@ class EmonHub(object):
             self._setup.run()
             if self._setup.check_settings():
                 self._update_settings(self._setup.settings)
+                # self._send_settings(self._setup.settings)
+                
             
             # For all Interfacers
             for I in self._interfacers.itervalues():
@@ -244,6 +256,36 @@ class EmonHub(object):
 
         if 'nodes' in settings:
             ehc.nodelist = settings['nodes']
+            
+    def _send_settings(self, settings):
+        # self._log.error("SENDING SETTINGS" + json.dumps(settings))     
+        
+        post_body = ""
+        
+        if 'nodes' in settings:
+            post_body = json.dumps(settings['nodes'])
+            
+        reply = ""
+        request = urllib2.Request("http://localhost/emoncms/nodes/setconfig.json", post_body)
+        try:
+            response = urllib2.urlopen(request, timeout=60)
+        except urllib2.HTTPError as e:
+            self._log.warning(self.name + " couldn't send to server, HTTPError: " +
+                              str(e.code))
+        except urllib2.URLError as e:
+            self._log.warning(self.name + " couldn't send to server, URLError: " +
+                              str(e.reason))
+        except httplib.HTTPException:
+            self._log.warning(self.name + " couldn't send to server, HTTPException")
+        except Exception:
+            import traceback
+            self._log.warning(self.name + " couldn't send to server, Exception: " +
+                              traceback.format_exc())
+        else:
+            reply = response.read()
+        finally:
+            return reply
+
 
     def _set_logging_level(self, level='WARNING', log=True):
         """Set logging level.
@@ -315,6 +357,9 @@ if __name__ == "__main__":
     loghandler.setFormatter(logging.Formatter(
             '%(asctime)s %(levelname)s %(message)s'))
     logger.addHandler(loghandler)
+    
+    mqttloghandler = MQTTLogHandler()
+    logger.addHandler(mqttloghandler)
 
     # Initialize hub setup
     try:

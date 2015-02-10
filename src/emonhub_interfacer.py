@@ -232,6 +232,15 @@ class EmonHubInterfacer(object):
                     return False
                 bytepos += size
                 decoded.append(value)
+ 
+        # apply scale
+        if node in ehc.nodelist:
+            if 'scale' in ehc.nodelist[node]:
+                scale = ehc.nodelist[node]['scale']
+                s = len(scale)
+                for i in range(len(decoded)):
+                    if i < s:
+                        decoded[i] = decoded[i] * float(scale[i])
 
         # Insert node ID before data
         decoded.insert(0, int(node))
@@ -406,7 +415,7 @@ class EmonHubJeeInterfacer(EmonHubSerialInterfacer):
         if com_baud != 0:
             super(EmonHubJeeInterfacer, self).__init__(name, com_port, com_baud)
         else:
-            for com_baud in (38400, 9600):
+            for com_baud in (9600,9600):
                 super(EmonHubJeeInterfacer, self).__init__(name, com_port, com_baud)
                 self._ser.write("?")
                 time.sleep(2)

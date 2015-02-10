@@ -14,6 +14,7 @@ import logging
 import json
 import threading
 import Queue
+import mosquitto
 
 import emonhub_buffer as ehb
   
@@ -332,7 +333,7 @@ class EmonHubEmoncmsReporter(EmonHubReporter):
         sentat = int(time.time())
 
         # Construct post_url (without apikey)
-        post_url = self._settings['url']+'/input/bulk'+'.json?apikey='
+        post_url = self._settings['url']+'.json?apikey='
         post_body = "data="+data_string+"&sentat="+str(sentat)
 
         # logged before apikey added for security
@@ -352,6 +353,95 @@ class EmonHubEmoncmsReporter(EmonHubReporter):
         else:
             self._log.warning(self.name + " send failure: wanted 'ok' but got '" +reply+ "'")
 
+"""class EmonHubMqttReporter
+
+Publishes data to MQTT broker
+
+"""
+class EmonHubMqttReporter(EmonHubReporter):
+
+    def __init__(self, reporterName, queue, **kwargs):
+        """Initialize reporter
+
+        """
+
+        # Initialization
+        super(EmonHubMqttReporter, self).__init__(reporterName, queue, **kwargs)
+
+        # add or alter any default EmonHubReporter settings for this reporter
+        #TODO decide on strategy for buffering and batchsend if implemented
+        # self._defaults.update({'batchsize': 100})
+        #TODO create MQTT default settings eg broker/url/ip/port/username/password etc
+        self._mqtt_settings = {'setting1': "A", 'setting2': 'B'}
+        
+        self.mqttc = mosquitto.Mosquitto()
+        self.mqttc.connect("127.0.0.1",1883, 60, True)
+
+        # This line just stops the default values printing to logfile at start-up
+        self._settings.update(self._defaults)
+
+    def set(self, **kwargs):
+        """
+
+        :param kwargs:
+        :return:
+        """
+
+        super (EmonHubMqttReporter, self).set(**kwargs)
+
+        for key, setting in self._mqtt_settings.iteritems():
+            #valid = False
+            if not key in kwargs.keys():
+                setting = self._mqtt_settings[key]
+            else:
+                setting = kwargs[key]
+            if key in self._settings and self._settings[key] == setting:
+                continue
+            elif key == 'setting1' and setting == "test1":
+                #TODO create setting checks and filters etc
+                self._settings[key] = setting
+                self._log.info(self.name + " " + key + ": "  + str(setting))
+                continue
+            elif key == 'setting2' and setting == "test2":
+                #TODO create setting checks and filters etc
+                self._settings[key] = setting
+                self._log.info(self.name + " " + key + ": "  + str(setting))
+                continue
+            else:
+                self._log.warning("'%s' is not valid for %s: %s" % (setting, self.name, key))
+
+    def _process_post(self, databuffer):
+        """Send data to server."""
+        
+        node = databuffer[0][1]
+        values = databuffer[0][2:]
+        values = ",".join(map(str, values))
+        self._log.debug(self.name+" api/"+str(node)+"/values: "+values)
+        self.mqttc.publish("api/"+str(node)+"/values",values)
+        
+        # name = 0
+        # for i in range(2,len(databuffer[0])):
+            # name+=1
+            # print "emoncms/input/"+str(node)+"/"+str(name)+" "+str(databuffer[0][i])
+            # self.mqttc.publish("emoncms/input/"+str(node)+"/"+str(name),databuffer[0][i])
+        
+        return True
+        #TODO format data
+        # each frame will be unixtime nodeid val1 val2...... (last val maybe rssi)
+        # value "names" could be assigned by using node id to query [nodes][[nodeid]][[[names]]]
+        # per node topics can be constructed from [nodes][[nodeid]][[[name]]] by node id
+
+        #TODO construct the topic string
+        # mqtt broker url & main topic
+
+
+        #TODO log the outgoing publication
+
+
+        #TODO publish
+
+        #TODO delete forwarded data from buffer ???
+        
 """class EmonHubReporterInitError
 
 Raise this when init fails.
