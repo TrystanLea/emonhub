@@ -50,8 +50,10 @@ class EmonHubInterfacer(object):
         # Initialize interval timer's "started at" timestamp
         self._interval_timestamp = 0
         
-        self.mqttc = mosquitto.Mosquitto()
-        self.mqttc.connect("127.0.0.1",1883, 60, True)
+        self._mqttc = mosquitto.Mosquitto()
+        self._mqttc.on_message = self.on_message
+        self._mqttc.connect("127.0.0.1",1883, 60, True)
+        self._mqttc.subscribe("tx", 0)
         
     def close(self):
         """Close socket."""
@@ -64,6 +66,9 @@ class EmonHubInterfacer(object):
         
         """
         pass
+        
+    def on_message(self, mosq, obj, msg):
+        self._log.debug(self.name + " on_message received "+msg.payload)
 
     def _process_frame(self, frame, timestamp=0.0):
         """Process a frame of data
@@ -129,13 +134,13 @@ class EmonHubInterfacer(object):
             return
         
         # Frame topic includes nodeid and received time
-        self.mqttc.publish("emonhub/frame/rx",json.dumps(frame))
+        self._mqttc.publish("emonhub/frame/rx",json.dumps(frame))
         
         # A local install of emonview/cms could either subscribe to emonhub/frame or to nodes/10/values
         # subscribing to nodes/10/values would require emonview/cms to have no latency timing issues as 
         # this api registers the node time as the time recieved in the subscribing application
         nodeid = frame[1]
-        self.mqttc.publish("nodes/"+str(nodeid)+"/values",",".join(map(str, frame[2:])))
+        self._mqttc.publish("nodes/"+str(nodeid)+"/values",",".join(map(str, frame[2:])))
         
         return frame
 
@@ -606,6 +611,7 @@ class EmonHubJeeInterfacer(EmonHubSerialInterfacer):
         This should be called in main loop by instantiater.
         
         """
+        self._mqttc.loop(0)
 
         now = time.time()
 
@@ -615,7 +621,13 @@ class EmonHubJeeInterfacer(EmonHubSerialInterfacer):
             if now - self._interval_timestamp > interval:
                 self._send_time()
                 self._interval_timestamp = now
-    
+                
+    def on_message(self, mosq, obj, msg):
+        
+        if msg.topic=="tx":
+            self._log.debug(self.name + " broadcasting packet "+msg.payload)
+            self._ser.write(msg.payload)
+        
     def _send_time(self):
         """Send time over radio link to synchronize emonGLCD
 
