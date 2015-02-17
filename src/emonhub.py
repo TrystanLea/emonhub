@@ -18,14 +18,10 @@ import argparse
 import pprint
 
 import emonhub_setup as ehs
-import emonhub_reporter as ehr
-import emonhub_interfacer as ehi
+import emonhub_modules as ehm
 import emonhub_coder as ehc
 
 """class EmonHub
-
-Monitors data inputs through EmonHubInterfacer instances, and sends data to
-target servers through EmonHubEmoncmsReporter instances.
 
 Communicates with the user through an EmonHubSetup
 
@@ -56,9 +52,8 @@ class EmonHub(object):
         self._log.info("EmonHub %s" % self.__version__)
         self._log.info("Opening hub...")
         
-        # Initialize Reporters and Interfacers
-        self._reporters = {}
-        self._interfacers = {}
+        # Initialize modules and Interfacers
+        self._modules = {}
         self._update_settings(settings)
         
     def run(self):
@@ -79,12 +74,6 @@ class EmonHub(object):
             self._setup.run()
             if self._setup.check_settings():
                 self._update_settings(self._setup.settings)
-            
-            # For all Interfacers
-            for I in self._interfacers.itervalues():
-                # Execute run method
-                I.run()
-                I.read()
                 
             # Sleep until next iteration
             time.sleep(0.2)
@@ -94,10 +83,7 @@ class EmonHub(object):
         
         self._log.info("Exiting hub...")
 
-        for I in self._interfacers.itervalues():
-            I.close()
-
-        for R in self._reporters.itervalues():
+        for R in self._modules.itervalues():
             R.stop = True
             R.join()
 
@@ -123,49 +109,49 @@ class EmonHub(object):
         # Create a place to hold buffer contents whilst a deletion & rebuild occurs
         self.temp_buffer = {}
         
-        # Reporters
-        for name in self._reporters.keys():
-            # Delete reporters if not listed or have no 'Type' in the settings without further checks
+        # modules
+        for name in self._modules.keys():
+            # Delete modules if not listed or have no 'Type' in the settings without further checks
             # (This also provides an ability to delete & rebuild by commenting 'Type' in conf)
-            if not name in settings['reporters'] or not 'Type' in settings['reporters'][name]:
+            if not name in settings['modules'] or not 'Type' in settings['modules'][name]:
                 pass
             else:
                 try:
                     # test for 'init_settings' and 'runtime_setting' sections
-                    settings['reporters'][name]['init_settings']
-                    settings['reporters'][name]['runtimesettings']
+                    settings['modules'][name]['init_settings']
+                    settings['modules'][name]['runtimesettings']
                 except Exception as e:
                     # If reporter's settings are incomplete, continue without updating
                     self._log.error("Unable to update '" + name + "' configuration: " + str(e))
                     continue
                 else:
                     # check init_settings against the file copy, if they are the same move on to the next
-                    if self._reporters[name].init_settings == settings['reporters'][name]['init_settings']:
+                    if self._modules[name].init_settings == settings['modules'][name]['init_settings']:
                         continue
                     else:
-                        if self._reporters[name].buffer._data_buffer:
-                            self.temp_buffer[name]= self._reporters[name].buffer._data_buffer
-            # Delete reporters if setting changed or name is unlisted or Type is missing
+                        if self._modules[name].buffer._data_buffer:
+                            self.temp_buffer[name]= self._modules[name].buffer._data_buffer
+            # Delete modules if setting changed or name is unlisted or Type is missing
             self._log.info("Deleting reporter '%s'", name)
-            self._reporters[name].stop = True
-            del(self._reporters[name])
-        for name, R in settings['reporters'].iteritems():
+            self._modules[name].stop = True
+            del(self._modules[name])
+        for name, R in settings['modules'].iteritems():
             # If reporter does not exist, create it
-            if name not in self._reporters:
+            if name not in self._modules:
                 try:
                     if not 'Type' in R:
                         continue
                     self._log.info("Creating " + R['Type'] + " '%s' ", name)
   
                     # This gets the class from the 'Type' string
-                    reporter = getattr(ehr, R['Type'])(name, **R['init_settings'])
+                    reporter = getattr(ehm, R['Type'])(name, **R['init_settings'])
                     reporter.set(**R['runtimesettings'])
                     reporter.init_settings = R['init_settings']
                     # If a memory buffer back-up exists copy it over and remove the back-up
                     if name in self.temp_buffer:
                         reporter.buffer._data_buffer = self.temp_buffer[name]
                         del self.temp_buffer[name]
-                except ehr.EmonHubReporterInitError as e:
+                except ehm.EmonHubModuleInitError as e:
                     # If reporter can't be created, log error and skip to next
                     self._log.error("Failed to create '" + name + "' reporter: " + str(e))
                     continue
@@ -174,59 +160,11 @@ class EmonHub(object):
                     self._log.error("Unable to create '" + name + "' reporter: " + str(e))
                     continue
                 else:
-                    self._reporters[name] = reporter
+                    self._modules[name] = reporter
             else:
                 # Otherwise just update the runtime settings if possible
                 if 'runtimesettings' in R:
-                    self._reporters[name].set(**R['runtimesettings'])
-
-        # Interfacers
-        for name in self._interfacers.keys():
-            # Delete interfacers if not listed or have no 'Type' in the settings without further checks
-            # (This also provides an ability to delete & rebuild by commenting 'Type' in conf)
-            if not name in settings['interfacers'] or not 'Type' in settings['interfacers'][name]:
-                pass
-            else:
-                try:
-                    # test for 'init_settings' and 'runtime_setting' sections
-                    settings['interfacers'][name]['init_settings']
-                    settings['interfacers'][name]['runtimesettings']
-                except Exception as e:
-                    # If interfacer's settings are incomplete, continue without updating
-                    self._log.error("Unable to update '" + name + "' configuration: " + str(e))
-                    continue
-                else:
-                    # check init_settings against the file copy, if they are the same move on to the next
-                    if self._interfacers[name].init_settings == settings['interfacers'][name]['init_settings']:
-                        continue
-            self._interfacers[name].close()
-            self._log.info("Deleting interfacer '%s' ", name)
-            del(self._interfacers[name])
-        for name, I in settings['interfacers'].iteritems():
-            # If interfacer does not exist, create it
-            if name not in self._interfacers:
-                try:
-                    if not 'Type' in I:
-                        continue
-                    self._log.info("Creating " + I['Type'] + " '%s' ", name)
-                    # This gets the class from the 'Type' string
-                    interfacer = getattr(ehi, I['Type'])(name, **I['init_settings'])
-                    interfacer.set(**I['runtimesettings'])
-                    interfacer.init_settings = I['init_settings']
-                except ehi.EmonHubInterfacerInitError as e:
-                    # If interfacer can't be created, log error and skip to next
-                    self._log.error("Failed to create '" + name + "' interfacer: " + str(e))
-                    continue
-                except Exception as e:
-                    # If interfacer can't be created, log error and skip to next
-                    self._log.error("Unable to create '" + name + "' interfacer: " + str(e))
-                    continue
-                else:
-                    self._interfacers[name] = interfacer
-            else:
-                # Otherwise just update the runtime settings if possible
-                if 'runtimesettings' in I:
-                    self._interfacers[name].set(**I['runtimesettings'])
+                    self._modules[name].set(**R['runtimesettings'])
 
         if 'nodes' in settings:
             ehc.nodelist = settings['nodes']
