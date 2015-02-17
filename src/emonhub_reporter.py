@@ -13,7 +13,7 @@ import time
 import logging
 import json
 import threading
-import Queue
+import mosquitto
 
 import emonhub_buffer as ehb
   
@@ -29,7 +29,7 @@ destination server.
 
 class EmonHubReporter(threading.Thread):
 
-    def __init__(self, reporterName, queue, buffer_type="memory", buffer_size=1000, **kwargs):
+    def __init__(self, reporterName, buffer_type="memory", buffer_size=1000, **kwargs):
         """Create a server data buffer initialized with server settings."""
 
         # Initialize logger
@@ -43,7 +43,6 @@ class EmonHubReporter(threading.Thread):
         self.init_settings = {}
         self._defaults = {'pause': 'off', 'interval': '0', 'batchsize': '1'}
         self._settings = {}
-        self._queue = queue
 
         # This line will stop the default values printing to logfile at start-up
         # unless they have been overwritten by emonhub.conf entries
@@ -64,6 +63,12 @@ class EmonHubReporter(threading.Thread):
         self._log.info("Set up reporter '%s' (buffer: %s | size: %s)"
                        % (reporterName, buffer_type, buffer_size))
 
+        # Start MQTT (Mosquitto)
+        self._mqttc = mosquitto.Mosquitto()
+        self._mqttc.on_message = self.on_message
+        self._mqttc.connect("127.0.0.1",1883, 60, True)
+        self._mqttc.subscribe("emonhub/#", 0)
+        
         # Initialise a thread and start the reporter
         self.stop = False
         self.start()
@@ -148,15 +153,17 @@ class EmonHubReporter(threading.Thread):
 
         """
         while not self.stop:
-            # If there are frames in the queue
-            while not self._queue.empty():
-                # Add each frame to the buffer
-                frame = self._queue.get()
-                self.add(frame)
+            # loop
+            self._mqttc.loop(0)
             # Don't loop to fast
             time.sleep(0.1)
             # Action reporter tasks
             self.action()
+            
+    def on_message(self, mosq, obj, msg):
+        print msg.topic + " " + msg.payload
+        if msg.topic=="emonhub/frame/rx":
+            self.add(json.loads(msg.payload))
 
     def action(self):
         """
@@ -251,13 +258,13 @@ Stores server parameters and buffers the data between two HTTP requests
 
 class EmonHubEmoncmsReporter(EmonHubReporter):
 
-    def __init__(self, reporterName, queue, **kwargs):
+    def __init__(self, reporterName, **kwargs):
         """Initialize reporter
 
         """
 
         # Initialization
-        super(EmonHubEmoncmsReporter, self).__init__(reporterName, queue, **kwargs)
+        super(EmonHubEmoncmsReporter, self).__init__(reporterName, **kwargs)
 
         # add or alter any default settings for this reporter
         self._defaults.update({'batchsize': 100})

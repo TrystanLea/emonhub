@@ -16,7 +16,6 @@ import logging.handlers
 import signal
 import argparse
 import pprint
-import Queue
 
 import emonhub_setup as ehs
 import emonhub_reporter as ehr
@@ -60,7 +59,6 @@ class EmonHub(object):
         # Initialize Reporters and Interfacers
         self._reporters = {}
         self._interfacers = {}
-        self._queue = {}
         self._update_settings(settings)
         
     def run(self):
@@ -86,19 +84,8 @@ class EmonHub(object):
             for I in self._interfacers.itervalues():
                 # Execute run method
                 I.run()
-                # Read socket
-                values = I.read()
-                # If complete and valid data was received
-                if values is not None:
-                    # Place a copy of the values in a queue for each reporter
-                    for name in self._reporters:
-                        # discard if reporter 'pause' set to 'all' or 'in'
-                        if 'pause' in self._reporters[name]._settings \
-                                and str(self._reporters[name]._settings['pause']).lower() in \
-                                ['all', 'in']:
-                            continue
-                        self._queue[name].put(values)
-
+                I.read()
+                
             # Sleep until next iteration
             time.sleep(0.2)
          
@@ -169,10 +156,9 @@ class EmonHub(object):
                     if not 'Type' in R:
                         continue
                     self._log.info("Creating " + R['Type'] + " '%s' ", name)
-                    # Create the queue for this reporter
-                    self._queue[name] = Queue.Queue(0)
+  
                     # This gets the class from the 'Type' string
-                    reporter = getattr(ehr, R['Type'])(name, self._queue[name], **R['init_settings'])
+                    reporter = getattr(ehr, R['Type'])(name, **R['init_settings'])
                     reporter.set(**R['runtimesettings'])
                     reporter.init_settings = R['init_settings']
                     # If a memory buffer back-up exists copy it over and remove the back-up

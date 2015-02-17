@@ -13,6 +13,8 @@ import datetime
 import logging
 import socket
 import select
+import mosquitto
+import json
 
 import emonhub_coder as ehc
 
@@ -47,6 +49,9 @@ class EmonHubInterfacer(object):
 
         # Initialize interval timer's "started at" timestamp
         self._interval_timestamp = 0
+        
+        self.mqttc = mosquitto.Mosquitto()
+        self.mqttc.connect("127.0.0.1",1883, 60, True)
         
     def close(self):
         """Close socket."""
@@ -122,6 +127,15 @@ class EmonHubInterfacer(object):
         if 'pause' in self._settings \
                 and str(self._settings['pause']).lower() in ['all', 'out']:
             return
+        
+        # Frame topic includes nodeid and received time
+        self.mqttc.publish("emonhub/frame/rx",json.dumps(frame))
+        
+        # A local install of emonview/cms could either subscribe to emonhub/frame or to nodes/10/values
+        # subscribing to nodes/10/values would require emonview/cms to have no latency timing issues as 
+        # this api registers the node time as the time recieved in the subscribing application
+        nodeid = frame[1]
+        self.mqttc.publish("nodes/"+str(nodeid)+"/values",",".join(map(str, frame[2:])))
         
         return frame
 
