@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Example emonhub frame reader for external application using frame's directly
+# Example emonhub mqtt reader
 
 import mosquitto
 import time

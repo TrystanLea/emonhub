@@ -18,6 +18,7 @@ import json
 import threading
 import urllib2
 import httplib
+import struct
 
 import emonhub_coder as ehc
 import emonhub_buffer as ehb
@@ -60,10 +61,10 @@ class EmonHubInterfacer(threading.Thread):
         self._mqttc = mosquitto.Mosquitto()
         self._mqttc.on_message = self.on_message
         self._mqttc.connect("127.0.0.1",1883, 60, True)
-        self._mqttc.subscribe("tx", 0)
+        self._mqttc.subscribe("emonhub/#", 0)
         
         # Open serial port
-        self._ser = self._open_serial_port("/dev/ttyUSB0", 9600)
+        self._ser = self._open_serial_port("/dev/ttyAMA0", 9600)
         self._rx_buf = ''
         
         # Initialise a thread and start the reporter
@@ -149,13 +150,15 @@ class EmonHubInterfacer(threading.Thread):
             return
         
         # Frame topic includes nodeid and received time
-        self._mqttc.publish("emonhub/frame/rx",json.dumps(frame))
+        self._mqttc.publish("emonhub/rx/frame",json.dumps(frame))
         
         # A local install of emonview/cms could either subscribe to emonhub/frame or to nodes/10/values
         # subscribing to nodes/10/values would require emonview/cms to have no latency timing issues as 
         # this api registers the node time as the time recieved in the subscribing application
         nodeid = frame[1]
-        self._mqttc.publish("nodes/"+str(nodeid)+"/values",",".join(map(str, frame[2:])))
+        self._mqttc.publish("emonhub/rx/"+str(nodeid)+"/values",",".join(map(str, frame[2:-1])))
+        
+        print frame
         
         return frame
 
@@ -266,6 +269,15 @@ class EmonHubInterfacer(threading.Thread):
                     return False
                 bytepos += size
                 decoded.append(value)
+                
+        # apply scale
+        if node in ehc.nodelist:
+            if 'scale' in ehc.nodelist[node]:
+                scale = ehc.nodelist[node]['scale']
+                s = len(scale)
+                for i in range(len(decoded)):
+                    if i < s:
+                        decoded[i] = decoded[i] * float(scale[i])
 
         # Insert node ID before data
         decoded.insert(0, int(node))
@@ -585,6 +597,7 @@ class EmonHubJeeInterfacer(EmonHubSerialInterfacer):
         {'baseid': '15', 'frequency': '4', 'group': '210'}
         
         """
+        return False
 
         for key, setting in self._jee_settings.iteritems():
             # Decide which setting value to use
@@ -641,12 +654,51 @@ class EmonHubJeeInterfacer(EmonHubSerialInterfacer):
                     self._interval_timestamp = now
             
             time.sleep(0.1)
-                
+            
     def on_message(self, mosq, obj, msg):
         
-        if msg.topic=="tx":
-            self._log.debug(self.name + " broadcasting packet "+msg.payload)
-            self._ser.write(msg.payload)
+        topic_parts = msg.topic.split("/")
+        
+        if topic_parts[0]=="emonhub" and topic_parts[1]=="tx":
+        
+            nodeid = topic_parts[2]
+        
+            if nodeid in ehc.nodelist:
+                if "Tx" in ehc.nodelist[nodeid]:
+                
+                    bytedata = []
+                    vararray = msg.payload.split(",")
+                    x=0
+                    scales = []
+                    if 'scale' in ehc.nodelist[nodeid]['Tx']:
+                        scales = ehc.nodelist[nodeid]['Tx']['scale']
+                    
+                    for code in ehc.nodelist[nodeid]['Tx']["datacodes"]:
+                    
+                        scale = 1
+                        if len(scales)>x: scale = float(scales[x])
+                        
+                        try:
+                            value = float(vararray[x])
+                        except ValueError:
+                            pass
+                            
+                        try:
+                            value = int(vararray[x])
+                        except ValueError:
+                            pass
+                        
+                        value = value / scale
+                        
+                        tmp = struct.pack(code,value)
+                        for i in range(len(tmp)):
+                            bytedata.append(struct.unpack('B', tmp[i])[0])
+                        x=x+1
+                    
+                    bytestr = ",".join(str(val) for val in bytedata)
+     
+                    self._log.debug(self.name + " broadcasting packet "+str(nodeid)+","+bytestr+",s")
+                    self._ser.write(str(nodeid)+","+bytestr+",s")
         
     def _send_time(self):
         """Send time over radio link to synchronize emonGLCD
@@ -893,7 +945,7 @@ class EmonHubReporter(threading.Thread):
             
     def on_message(self, mosq, obj, msg):
         print msg.topic + " " + msg.payload
-        if msg.topic=="emonhub/frame/rx":
+        if msg.topic=="emonhub/rx/frame":
             self.add(json.loads(msg.payload))
 
     def action(self):

@@ -9,6 +9,7 @@ mqttc.connect("127.0.0.1",1883, 60, True)
 
 if __name__ == '__main__':    
     while True:
-        mqttc.publish("tx","100,200,300,s")
-        print "tx 100,200,300,s"
+        mqttc.publish("emonhub/tx/30/values","1,19.5")
+        time.sleep(5.0)
+        mqttc.publish("emonhub/tx/30/values","0,19.2")
         time.sleep(5.0)
