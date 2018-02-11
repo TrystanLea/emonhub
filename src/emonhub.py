@@ -16,10 +16,9 @@ import logging.handlers
 import signal
 import argparse
 import pprint
-import Queue
+import glob, os
 
 import emonhub_setup as ehs
-import emonhub_reporter as ehr
 import emonhub_interfacer as ehi
 import emonhub_coder as ehc
 
@@ -36,7 +35,7 @@ Controlled by the user via EmonHubSetup
 
 class EmonHub(object):
     
-    __version__ = 'Pre-Release Development Version (rc2.0?)'
+    __version__ = "emonHub emon-pi variant v2.0.0"
     
     def __init__(self, setup):
         """Setup an OpenEnergyMonitor emonHub.
@@ -58,17 +57,8 @@ class EmonHub(object):
         self._log.info("EmonHub %s" % self.__version__)
         self._log.info("Opening hub...")
         
-        # Initialize Reporters and Interfacers
-        self._reporters = {}
+        # Initialize Interfacers
         self._interfacers = {}
-        self._queue = {}
-
-        # Create Queues
-        self._rxq = {}
-        self._txq = {}
-
-        # Maximum number of channels
-        self._channel_max = 8
 
         # Update settings
         self._update_settings(settings)
@@ -83,7 +73,12 @@ class EmonHub(object):
 
         # Set signal handler to catch SIGINT and shutdown gracefully
         signal.signal(signal.SIGINT, self._sigint_handler)
-        
+
+        # Initialise thread restart counters
+        restart_count={}
+        for I in self._interfacers.itervalues():
+            restart_count[I.name]=0
+
         # Until asked to stop
         while not self._exit:
             
@@ -92,47 +87,48 @@ class EmonHub(object):
             if self._setup.check_settings():
                 self._update_settings(self._setup.settings)
 
-            # check all reporter threads are still running
-            for R in self._reporters.itervalues():
-                if not R.isAlive():
-                    #R.start()
-                    self._log.warning(R.name + " thread is dead") #had to be restarted")
-
             # For all Interfacers
+            kill_list=[]
             for I in self._interfacers.itervalues():
-                # Check thread is still running
+                # Check threads are still running
                 if not I.isAlive():
-                    #I.start()
-                    self._log.warning(I.name + " thread is dead") # had to be restarted")
-                if not I._rxq.empty(): # "if not" will pass just 1 frame "while not" will pass each frame
-                    # Fetch a string of values
-                    cargo = I._rxq.get()
+                    kill_list.append(I.name) # <-avoid modification of iterable within loop
 
-                    if int(I._settings['rxchannels']) == 0:
-                        continue
-                    else:
-                        # Loop through all "channels" and put values if in "rxchannels"
-                        for ch in range (1, int(setup.settings['hub']['channels']), 1):
-                           # if int(I._settings['rxchannels'][2:].zfill(self._channel_max)[-ch]):
-                            if int(I._settings['rxchannels'].zfill(self._channel_max)[-ch]):
-                          # '{:0"[self._channel_max]"d}'.format(I._settings['rxchannels'])
-                            #if int(bin(int(I._settings['rxchannels']))[-ch]):
-                                for txI in self._interfacers.itervalues():
-                                    if txI != I and int(txI._settings['txchannels'].zfill(self._channel_max)[-ch]):
-                                    #if txI != I and int(bin(int(txI._settings['txchannels']))[2:].zfill(self._channel_max)[-ch]):
-                                        self._log.debug(str(cargo.uri)+" " + I.name + " cargo passed to "+ txI.name)
-                                        txI._txq.put(cargo)
+                # Read each interfacers pub channels
+                for pub_channel in I._settings['pubchannels']:
+                
+                    if pub_channel in I._pub_channels:
+                        if len(I._pub_channels[pub_channel])>0:
+                        
+                            # POP cargo item (one at a time)
+                            cargo = I._pub_channels[pub_channel].pop(0)
+                            
+                            # Post to each subscriber interface
+                            for sub_interfacer in self._interfacers.itervalues():
+                                # For each subsciber channel
+                                for sub_channel in sub_interfacer._settings['subchannels']:
+                                    # If channel names match
+                                    if sub_channel==pub_channel:
+                                        # init if empty
+                                        if not sub_channel in sub_interfacer._sub_channels:
+                                            sub_interfacer._sub_channels[sub_channel] = []
+                                            
+                                        # APPEND cargo item
+                                        sub_interfacer._sub_channels[sub_channel].append(cargo)
 
-                    # Retained support for reporters
-                    if int(I._settings['rxchannels']) == 1:
-                        for name in self._reporters:
-                            # discard if reporter 'pause' set to 'all' or 'in'
-                            if 'pause' in self._reporters[name]._settings \
-                                    and str(self._reporters[name]._settings['pause']).lower() in \
-                                    ['all', 'in']:
-                                continue
-                            self._queue[name].put(cargo)
+            # ->avoid modification of iterable within loop
+            for name in kill_list:
+                self._log.warning(name + " thread is dead.")
 
+                # The following should trigger a restart ... unless the
+                # interfacer is also removed from the settings table.
+                del(self._interfacers[name])
+
+                # Trigger restart by calling update settings
+                self._log.warning("Attempting to restart thread "+name+" (thread has been restarted "+str(restart_count[name])+" times...")
+                restart_count[name]+=1
+                self._update_settings(self._setup.settings)
+                
             # Sleep until next iteration
             time.sleep(0.2)
          
@@ -144,10 +140,6 @@ class EmonHub(object):
         for I in self._interfacers.itervalues():
             I.stop = True
             I.join()
-
-        for R in self._reporters.itervalues():
-            R.stop = True
-            R.join()
 
         self._log.info("Exit completed")
         logging.shutdown()
@@ -170,64 +162,6 @@ class EmonHub(object):
 
         # Create a place to hold buffer contents whilst a deletion & rebuild occurs
         self.temp_buffer = {}
-        
-        # Reporters
-        for name in self._reporters.keys():
-            # Delete reporters if not listed or have no 'Type' in the settings without further checks
-            # (This also provides an ability to delete & rebuild by commenting 'Type' in conf)
-            if not name in settings['reporters'] or not 'Type' in settings['reporters'][name]:
-                pass
-            else:
-                try:
-                    # test for 'init_settings' and 'runtime_setting' sections
-                    settings['reporters'][name]['init_settings']
-                    settings['reporters'][name]['runtimesettings']
-                except Exception as e:
-                    # If reporter's settings are incomplete, continue without updating
-                    self._log.error("Unable to update '" + name + "' configuration: " + str(e))
-                    continue
-                else:
-                    # check init_settings against the file copy, if they are the same move on to the next
-                    if self._reporters[name].init_settings == settings['reporters'][name]['init_settings']:
-                        continue
-                    else:
-                        if self._reporters[name].buffer._data_buffer:
-                            self.temp_buffer[name]= self._reporters[name].buffer._data_buffer
-            # Delete reporters if setting changed or name is unlisted or Type is missing
-            self._log.info("Deleting reporter '%s'", name)
-            self._reporters[name].stop = True
-            del(self._reporters[name])
-        for name, R in settings['reporters'].iteritems():
-            # If reporter does not exist, create it
-            if name not in self._reporters:
-                try:
-                    if not 'Type' in R:
-                        continue
-                    self._log.info("Creating " + R['Type'] + " '%s' ", name)
-                    # Create the queue for this reporter
-                    self._queue[name] = Queue.Queue(0)
-                    # This gets the class from the 'Type' string
-                    reporter = getattr(ehr, R['Type'])(name, self._queue[name], **R['init_settings'])
-                    reporter.set(**R['runtimesettings'])
-                    reporter.init_settings = R['init_settings']
-                    # If a memory buffer back-up exists copy it over and remove the back-up
-                    if name in self.temp_buffer:
-                        reporter.buffer._data_buffer = self.temp_buffer[name]
-                        del self.temp_buffer[name]
-                except ehr.EmonHubReporterInitError as e:
-                    # If reporter can't be created, log error and skip to next
-                    self._log.error("Failed to create '" + name + "' reporter: " + str(e))
-                    continue
-                except Exception as e:
-                    # If reporter can't be created, log error and skip to next
-                    self._log.error("Unable to create '" + name + "' reporter: " + str(e))
-                    continue
-                else:
-                    self._reporters[name] = reporter
-            else:
-                # Otherwise just update the runtime settings if possible
-                if 'runtimesettings' in R:
-                    self._reporters[name].set(**R['runtimesettings'])
 
         # Interfacers
         for name in self._interfacers.keys():
@@ -259,11 +193,8 @@ class EmonHub(object):
                     if not 'Type' in I:
                         continue
                     self._log.info("Creating " + I['Type'] + " '%s' ", name)
-                    # Create the rx & tx queues for this interfacer
-                    self._rxq[name] = Queue.Queue(0)
-                    self._txq[name] = Queue.Queue(0)
                     # This gets the class from the 'Type' string
-                    interfacer = getattr(ehi, I['Type'])(name, self._rxq[name], self._txq[name], **I['init_settings'])
+                    interfacer = getattr(ehi, I['Type'])(name,**I['init_settings'])
                     interfacer.set(**I['runtimesettings'])
                     interfacer.init_settings = I['init_settings']
                     interfacer.start()
@@ -284,12 +215,6 @@ class EmonHub(object):
 
         if 'nodes' in settings:
             ehc.nodelist = settings['nodes']
-
-        if 'channels' in settings['hub']:
-            if int(settings['hub']['channels']) > self._channel_max:
-                settings['hub']['channels'] = self._channel_max
-        else:
-            settings['hub']['channels'] = 1
 
     def _set_logging_level(self, level='WARNING', log=True):
         """Set logging level.
@@ -368,7 +293,14 @@ if __name__ == "__main__":
     except ehs.EmonHubSetupInitError as e:
         logger.critical(e)
         sys.exit("Unable to load configuration file: " + args.config_file)
- 
+
+    if 'use_syslog' in setup.settings['hub']:
+        if setup.settings['hub']['use_syslog'] == 'yes':
+            syslogger = logging.handlers.SysLogHandler(address='/dev/log')
+            syslogger.setFormatter(logging.Formatter(
+                  'emonHub[%(process)d]: %(levelname)-8s %(threadName)-10s %(message)s'))
+            logger.addHandler(syslogger)
+
     # If in "Show settings" mode, print settings and exit
     if args.show_settings:
         setup.check_settings()

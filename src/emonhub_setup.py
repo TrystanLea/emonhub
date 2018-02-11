@@ -10,6 +10,7 @@
 import time
 import logging
 from configobj import ConfigObj
+import json
 
 """class EmonHubSetup
 
@@ -20,17 +21,15 @@ dictionary with the following keys:
 
         'hub': a dictionary containing the hub settings
         'interfacers': a dictionary containing the interfacers
-        'reporters': a dictionary containing the reporters
 
         The hub settings are:
         'loglevel': the logging level
         
-        interfacers and reporters are dictionaries with the following keys:
+        interfacers are dictionaries with the following keys:
         'Type': class name
         'init_settings': dictionary with initialization settings
         'runtimesettings': dictionary with runtime settings
-        Initialization and runtime settings depend on the interfacer and
-        reporter type.
+        Initialization and runtime settings depend on the interfacer type.
 
 The run() method is supposed to be run regularly by the instantiater, to
 perform regular communication tasks.
@@ -79,6 +78,10 @@ class EmonHubFileSetup(EmonHubSetup):
         # Initialization
         super(EmonHubFileSetup, self).__init__()
 
+        self._fileformat = "ConfigObj" # or "ConfigObj"
+        
+        self._filename = filename
+        
         # Initialize update timestamp
         self._settings_update_timestamp = 0
         self._retry_time_interval = 5
@@ -91,11 +94,16 @@ class EmonHubFileSetup(EmonHubSetup):
 
         # Initialize attribute settings as a ConfigObj instance
         try:
-            self.settings = ConfigObj(filename, file_error=True)
+        
+            if self._fileformat == "ConfigObj":
+                self.settings = ConfigObj(filename, file_error=True)
+            else:            
+                with open(filename) as f:
+                    self.settings = json.loads(f.read())
+            
             # Check the settings file sections
             self.settings['hub']
             self.settings['interfacers']
-            self.settings['reporters']
         except IOError as e:
             raise EmonHubSetupInitError(e)
         except SyntaxError as e:
@@ -112,9 +120,9 @@ class EmonHubFileSetup(EmonHubSetup):
         
         """
         
-        # Check settings only once per second
+        # Check settings only once per second (could be extended if processing power is scarce)
         now = time.time()
-        if now - self._settings_update_timestamp < 0:
+        if now - self._settings_update_timestamp < 1:
             return
         # Update timestamp
         self._settings_update_timestamp = now
@@ -124,7 +132,12 @@ class EmonHubFileSetup(EmonHubSetup):
         
         # Get settings from file
         try:
-            self.settings.reload()
+            if self._fileformat == "ConfigObj":
+                self.settings.reload()
+            else:            
+                with open(self._filename) as f:
+                    self.settings = json.loads(f.read())
+                
         except IOError as e:
             self._log.warning('Could not get settings: ' + str(e) + self.retry_msg)
             self._settings_update_timestamp = now + self._retry_time_interval
@@ -146,7 +159,6 @@ class EmonHubFileSetup(EmonHubSetup):
             try:
                 self.settings['hub']
                 self.settings['interfacers']
-                self.settings['reporters']
             except KeyError as e:
                 self._log.warning("Configuration file missing section: " + str(e))
             else:

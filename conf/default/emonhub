@@ -1,9 +1,9 @@
-## emonHub settings 
+## emonHub settings
 
-# Edit this to configure the parameters used in 
+# Edit this to configure the parameters used in
 # the /etc/init.d/emonhub script.
 
-# This file should be deployed to /etc/default/emonhub 
+# This file should be deployed to /etc/default/emonhub
 # unless you have edited the init.d file to give an
 # alternate SYSCONF_PATH
 
@@ -11,7 +11,7 @@
 EMONHUB_PATH=/usr/share/emonhub/
 
 # Specify the full config file path:
-EMONHUB_CONFIG=/etc/emonhub/emonhub.conf
+EMONHUB_CONFIG=/home/pi/data/emonhub.conf
 
 # Specify the full log file path:
 EMONHUB_LOG=/var/log/emonhub/emonhub.log
