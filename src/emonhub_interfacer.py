@@ -133,19 +133,19 @@ class EmonHubInterfacer(threading.Thread):
         """
 
         # Create a frame of data in "emonCMS format"
-        # f = []
-        # try:
-        #    f.append(cargo.timestamp)
-        #    f.append(cargo.nodeid)
-        #    for i in cargo.realdata:
-        #        f.append(i)
-        #    if cargo.rssi:
-        #        f.append(cargo.rssi)
-        #        
-        #    self._log.debug(str(cargo.uri) + " adding frame to buffer => "+ str(f))
+        f = []
+        try:
+            f.append(cargo.timestamp)
+            f.append(cargo.nodeid)
+            for i in cargo.realdata:
+                f.append(i)
+            if cargo.rssi:
+                f.append(cargo.rssi)
+                
+            # self._log.debug(str(cargo.uri) + " adding frame to buffer => "+ str(f))
             
-        # except:
-        #    self._log.warning("Failed to create emonCMS frame " + str(f))
+        except:
+            self._log.warning("Failed to create emonCMS frame " + str(f))
             
         # self._log.debug(str(carg.ref) + " added to buffer =>"
         #                 + " time: " + str(carg.timestamp)
@@ -156,9 +156,10 @@ class EmonHubInterfacer(threading.Thread):
         # [[timestamp, nodeid, datavalues][timestamp, nodeid, datavalues]]
         # [[1399980731, 10, 150, 3450 ...]]
         
-        # Pass full cargo item:
-        # names required for MQTT interfacer and potentially future HTTP interfacer
-        self.buffer.storeItem(cargo)
+        # datauffer format can be overwritten by interfacer
+        
+        self.buffer.storeItem(f)
+
 
     def read(self):
         """Read raw data from interface and pass for processing.
@@ -1315,6 +1316,32 @@ class EmonHubMqttInterfacer(EmonHubInterfacer):
         self._mqttc.on_message = self.on_message
         self._mqttc.on_subscribe = self.on_subscribe
 
+    def add(self, cargo):
+        """Append data to buffer.
+        
+          format: {"emontx":{"power1":100,"power2":200,"power3":300}}
+          
+        """
+        nodename = str(cargo.nodeid)
+        if cargo.nodename: nodename = cargo.nodename
+        
+        f = {}
+        f['node'] = nodename
+        f['data'] = {}
+                        
+        for i in range(0,len(cargo.realdata)):
+            name = str(i+1)
+            if i<len(cargo.names):
+                name = cargo.names[i]
+            value = cargo.realdata[i]
+            f['data'][name] = value
+        
+        if cargo.rssi:
+            f['data']['rssi'] = cargo.rssi
+        
+        self.buffer.storeItem(f)
+        
+        
     def _process_post(self, databuffer):
         if not self._connected:
             self._log.info("Connecting to MQTT Server")
@@ -1326,25 +1353,17 @@ class EmonHubMqttInterfacer(EmonHubInterfacer):
                 time.sleep(1.0)
             
         else:
-            cargo = databuffer[0]
-        
+            frame = databuffer[0]
+            nodename = frame['node']
+            
             # ----------------------------------------------------------
             # General MQTT format: emonhub/rx/emonpi/power1 ... 100
             # ----------------------------------------------------------
             if int(self._settings["nodevar_format_enable"])==1:
-            
-                # Node id or nodename if given
-                nodestr = str(cargo.nodeid)
-                if cargo.nodename!=False: nodestr = str(cargo.nodename)
                 
-                varid = 1
-                for value in cargo.realdata:
-                    # Variable id or variable name if given
-                    varstr = str(varid)
-                    if (varid-1)<len(cargo.names):
-                        varstr = str(cargo.names[varid-1])
+                for inputname,value in frame['data'].iteritems():
                     # Construct topic
-                    topic = self._settings["nodevar_format_basetopic"]+nodestr+"/"+varstr
+                    topic = self._settings["nodevar_format_basetopic"]+nodename+"/"+inputname
                     payload = str(value)
                     
                     self._log.debug("Publishing: "+topic+" "+payload)
@@ -1352,41 +1371,27 @@ class EmonHubMqttInterfacer(EmonHubInterfacer):
                     
                     if result[0]==4:
                         self._log.info("Publishing error? returned 4")
-                        # return False
-                    
-                    varid += 1
-                    
-                # RSSI
-                topic = self._settings["nodevar_format_basetopic"]+nodestr+"/rssi"
-                payload = str(cargo.rssi)
-                self._log.info("Publishing: "+topic+" "+payload)
-                result =self._mqttc.publish(topic, payload=payload, qos=2, retain=False)
+                        return False
             
             # ----------------------------------------------------------    
             # Emoncms nodes module format: emonhub/rx/10/values ... 100,200,300
             # ----------------------------------------------------------
             if int(self._settings["node_format_enable"])==1:
             
-                topic = self._settings["node_format_basetopic"]+"rx/"+str(cargo.nodeid)+"/values"
-                payload = ",".join(map(str,cargo.realdata))
+                topic = self._settings["node_format_basetopic"]+"rx/"+nodename+"/values"
+                
+                values = []
+                for inputname,value in frame['data'].iteritems():
+                    values.append(value)
+                
+                payload = ",".join(map(str,values))
                 
                 self._log.info("Publishing: "+topic+" "+payload)
                 result =self._mqttc.publish(topic, payload=payload, qos=2, retain=False)
                 
                 if result[0]==4:
                     self._log.info("Publishing error? returned 4")
-                    # return False
-                    
-                # RSSI
-                topic = self._settings["node_format_basetopic"]+"rx/"+str(cargo.nodeid)+"/rssi"
-                payload = str(cargo.rssi)
-                
-                self._log.info("Publishing: "+topic+" "+payload)
-                result =self._mqttc.publish(topic, payload=payload, qos=2, retain=False)
-                
-                if result[0]==4:
-                    self._log.info("Publishing error? returned 4")
-                    # return False
+                    return False
                     
         return True
 
@@ -1530,7 +1535,7 @@ class EmonHubEmoncmsHTTPInterfacer(EmonHubInterfacer):
         # set an absolute upper limit for number of items to process per post
         self._item_limit = 250
                     
-    def _process_post(self, cargodatabuffer):
+    def _process_post(self, databuffer):
         """Send data to server."""
 
         # databuffer is of format:
@@ -1540,23 +1545,7 @@ class EmonHubEmoncmsHTTPInterfacer(EmonHubInterfacer):
         if not 'apikey' in self._settings.keys() or str.__len__(str(self._settings['apikey'])) != 32 \
                 or str.lower(str(self._settings['apikey'])) == 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx':
             return False
-          
-        # Convert cargo based databuffer into emoncms format  
-        databuffer = []
-        for c in range(0,len(cargodatabuffer)):
-            cargo = cargodatabuffer[c]
-            f = []
-            f.append(cargo.timestamp)
-            f.append(cargo.nodeid)
             
-            # Data values
-            for i in cargo.realdata:
-                f.append(i)
-            # RSSI
-            if cargo.rssi:
-               f.append(cargo.rssi)
-
-            databuffer.append(f)
             
         data_string = json.dumps(databuffer, separators=(',', ':'))
         
